@@ -37,9 +37,17 @@ class AgentState(TypedDict, total=False):
     touched_items: list[dict[str, Any]]
     execution_log: list[str]
     last_error: str | None
+    last_error_source: str | None
     recovery_attempted: bool
     final_response: str
     progress_events: list[str]
+
+
+class CheetahAgentError(Exception):
+    def __init__(self, source: str, detail: str) -> None:
+        super().__init__(detail)
+        self.source = source
+        self.detail = detail
 
 
 def normalize_work_items(work_items: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -278,22 +286,25 @@ class CheetahLangGraphAgent:
     def _llm_json(self, prompt: dict[str, Any]) -> dict[str, Any]:
         if self.llm is None:
             raise ValueError("LLM is not configured.")
-        response = self.llm.invoke(
-            [
-                (
-                    "system",
-                    "You are CHEETAH, an Azure DevOps LangGraph agent. Return valid JSON only.",
-                ),
-                ("user", json.dumps(prompt)),
-            ]
-        )
-        content = response.content if isinstance(response.content, str) else json.dumps(response.content)
-        content = content.strip()
-        if content.startswith("```"):
-            content = content.strip("`")
-            if content.lower().startswith("json"):
-                content = content[4:].strip()
-        return json.loads(content)
+        try:
+            response = self.llm.invoke(
+                [
+                    (
+                        "system",
+                        "You are CHEETAH, an Azure DevOps LangGraph agent. Return valid JSON only.",
+                    ),
+                    ("user", json.dumps(prompt)),
+                ]
+            )
+            content = response.content if isinstance(response.content, str) else json.dumps(response.content)
+            content = content.strip()
+            if content.startswith("```"):
+                content = content.strip("`")
+                if content.lower().startswith("json"):
+                    content = content[4:].strip()
+            return json.loads(content)
+        except Exception as exc:
+            raise CheetahAgentError("Azure OpenAI", f"{type(exc).__name__}: {exc}") from exc
 
     def _plan_request(self, state: AgentState) -> dict[str, Any]:
         self._emit_progress("Understanding the request")
@@ -439,10 +450,15 @@ class CheetahLangGraphAgent:
                 "touched_items": touched_items,
                 "execution_log": execution_log,
                 "last_error": None,
+                "last_error_source": None,
             }
         except Exception as exc:
             self._emit_progress("Execution failed, checking recovery path")
-            return {"last_error": str(exc), "execution_log": execution_log}
+            return {
+                "last_error": f"{type(exc).__name__}: {exc}",
+                "last_error_source": "Azure DevOps",
+                "execution_log": execution_log,
+            }
 
     def _route_after_execute(self, state: AgentState) -> Literal["recover", "finalize"]:
         if state.get("last_error") and not state.get("recovery_attempted"):
@@ -453,8 +469,6 @@ class CheetahLangGraphAgent:
         self._emit_progress("Inspecting the error and preparing a retry")
         error_text = state.get("last_error") or ""
         original_actions = state.get("action_queue", [])
-        fallback_state = state.copy()
-        fallback_state["recovery_attempted"] = True
 
         if self.llm is None:
             repaired = []
@@ -464,7 +478,12 @@ class CheetahLangGraphAgent:
                     normalized["state"] = "Active"
                 repaired.append(normalized)
             self._emit_progress("Retrying with a repaired plan")
-            return {"action_queue": repaired, "recovery_attempted": True, "last_error": None}
+            return {
+                "action_queue": repaired,
+                "recovery_attempted": True,
+                "last_error": None,
+                "last_error_source": None,
+            }
 
         prompt = {
             "selected_story": state.get("selected_story", {}),
@@ -486,14 +505,16 @@ class CheetahLangGraphAgent:
             "plan_reply": repaired.get("reply", state.get("plan_reply", "")),
             "recovery_attempted": True,
             "last_error": None,
+            "last_error_source": None,
         }
 
     def _finalize(self, state: AgentState) -> dict[str, Any]:
         self._emit_progress("Preparing the final response")
         if state.get("last_error"):
+            source = state.get("last_error_source") or "Unknown source"
             return {
                 "final_response": (
-                    "MAA KAA BHOSRAAA AHHHHH\n\nAzure DevOps error:\n"
+                    f"MAA KAA BHOSRAAA AHHHHH\n\n{source} error:\n"
                     f"```text\n{state['last_error']}\n```"
                 )
             }

@@ -4,7 +4,7 @@ import streamlit as st
 from dotenv import load_dotenv
 
 from azure_devops_client import AzureDevOpsClient
-from graph_agent import CheetahLangGraphAgent, build_langgraph_llm, normalize_work_items
+from graph_agent import CheetahAgentError, CheetahLangGraphAgent, build_langgraph_llm, normalize_work_items
 
 
 load_dotenv()
@@ -235,12 +235,20 @@ def main() -> None:
                     if result["rows"]:
                         assistant_message["table"] = result["rows"]
                     st.session_state["messages"].append(assistant_message)
+                except CheetahAgentError as exc:
+                    status.update(label="MAA KAA BHOSRAAA AHHHHH", state="error")
+                    st.session_state["messages"].append(
+                        {
+                            "role": "assistant",
+                            "content": f"MAA KAA BHOSRAAA AHHHHH\n\n{exc.source} error:\n```text\n{exc.detail}\n```",
+                        }
+                    )
                 except Exception as exc:
                     status.update(label="MAA KAA BHOSRAAA AHHHHH", state="error")
                     st.session_state["messages"].append(
                         {
                             "role": "assistant",
-                            "content": f"MAA KAA BHOSRAAA AHHHHH\n\nAzure DevOps error:\n```text\n{exc}\n```",
+                            "content": f"MAA KAA BHOSRAAA AHHHHH\n\nUnhandled app error:\n```text\n{type(exc).__name__}: {exc}\n```",
                         }
                     )
         st.rerun()
